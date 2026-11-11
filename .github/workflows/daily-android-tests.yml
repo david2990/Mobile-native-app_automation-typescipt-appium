@@ -56,6 +56,20 @@ jobs:
             echo "WARNING: /dev/kvm is not accessible to this user"
           fi
 
+      # adb and the emulator are not on PATH on a fresh runner; every later
+      # step relies on them, and a missing `adb` aborts the step instantly.
+      - name: Put Android tools on PATH
+        run: |
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Android tools
+        run: |
+          adb version
+          emulator -version | head -1 || true
+          sdkmanager --version || true
+
       - name: Install dependencies
         run: npm ci
 
@@ -128,15 +142,16 @@ jobs:
         run: |
           set -uo pipefail
           export ANDROID_AVD_HOME="$HOME/.android/avd"
-          nohup "$ANDROID_HOME/emulator/emulator" -avd ci35 \
+          nohup emulator -avd ci35 \
             -no-window -gpu swiftshader_indirect -no-snapshot -no-audio -no-boot-anim \
             -camera-back none -camera-front none -no-metrics \
             > ci-logs/emulator.log 2>&1 &
-          adb start-server
+          adb start-server || true
 
           booted=0
           for i in $(seq 1 120); do
-            state=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            # `|| true` keeps bash -e from aborting while the device is offline.
+            state=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
             echo "attempt $i: sys.boot_completed='${state}'" | tee -a ci-logs/boot-progress.txt
             if [ "$state" = "1" ]; then booted=1; break; fi
             sleep 5
