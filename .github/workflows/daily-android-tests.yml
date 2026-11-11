@@ -58,6 +58,16 @@ jobs:
 
       # Allure trends need the previous report, so carry the history folder
       # across runs. The key changes every run, restore-keys picks the newest.
+      - name: Runner diagnostics
+        run: |
+          echo "node: $(node -v)"
+          echo "npm: $(npm -v)"
+          echo "java: $(java -version 2>&1 | head -1)"
+          echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset}"
+          adb version || true
+          adb devices -l || true
+
       - name: Restore Allure history
         uses: actions/cache@v4
         with:
@@ -86,8 +96,11 @@ jobs:
             export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
             # android-emulator-runner already waits for the device to boot; an
             # extra adb wait/loop here only adds a way for the step to fail.
-            adb devices || true
-            npm run test:regression
+            set -o pipefail
+            mkdir -p ci-logs
+            adb devices -l > ci-logs/adb-devices.txt 2>&1 || true
+            adb shell getprop ro.build.version.release > ci-logs/android-version.txt 2>&1 || true
+            npm run test:regression 2>&1 | tee ci-logs/wdio-run.log
 
       - name: Seed Allure history
         if: always()
@@ -133,6 +146,16 @@ jobs:
           path: reports/artifacts
           if-no-files-found: ignore
 
+      - name: Upload Appium and HTML logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appium-logs
+          path: |
+            reports/appium
+            reports/html
+          if-no-files-found: ignore
+
       - name: Upload JUnit results
         if: always()
         uses: actions/upload-artifact@v4
@@ -140,6 +163,17 @@ jobs:
           name: junit-results
           path: reports/junit
           if-no-files-found: ignore
+
+      # CI logs are useless if they only exist behind an authenticated artifact
+      # download, so publish them with the report itself.
+      - name: Publish CI diagnostics with the report
+        if: always()
+        run: |
+          mkdir -p allure-report/ci-logs
+          cp ci-logs/*.txt ci-logs/*.log allure-report/ci-logs/ 2>/dev/null || true
+          cp -r reports/appium allure-report/ci-logs/appium 2>/dev/null || true
+          cp -r reports/artifacts allure-report/ci-logs/artifacts 2>/dev/null || true
+          ls -la allure-report/ci-logs || true
 
       - name: Configure Pages
         if: always()
