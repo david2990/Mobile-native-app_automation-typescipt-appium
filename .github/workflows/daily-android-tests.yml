@@ -98,24 +98,36 @@ jobs:
 
       - name: Create the AVD
         run: |
-          set -euo pipefail
+          set -uo pipefail
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          # Pin the AVD location: without it avdmanager can pick an XDG path and
+          # the emulator then cannot find the AVD that was just created.
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" | tee ci-logs/avdmanager.log
+
           echo "no" | avdmanager create avd \
             -n ci35 -k "system-images;android-35;google_apis;x86_64" -d pixel_6 --force \
-            2>&1 | tee ci-logs/avdmanager.log
-          # `emulator` is not on PATH on the runner, which failed this step even
-          # though the AVD itself had been created.
-          "$ANDROID_HOME/emulator/emulator" -list-avds 2>&1 | tee -a ci-logs/avdmanager.log || true
-          if [ ! -d "$HOME/.android/avd/ci35.avd" ]; then
-            echo "::error::AVD ci35 was not created"
+            2>&1 | tee -a ci-logs/avdmanager.log
+          rc=${PIPESTATUS[0]}
+          echo "avdmanager exit code: $rc" | tee -a ci-logs/avdmanager.log
+
+          echo "--- AVD directories found ---" | tee -a ci-logs/avdmanager.log
+          find "$HOME" -maxdepth 5 \( -name "*.avd" -o -name "ci35.ini" \) 2>/dev/null \
+            | tee -a ci-logs/avdmanager.log
+
+          if [ ! -d "$ANDROID_AVD_HOME/ci35.avd" ]; then
+            echo "::error::AVD ci35 was not created (avdmanager exit $rc)"
             exit 1
           fi
+          "$ANDROID_HOME/emulator/emulator" -list-avds 2>&1 | tee -a ci-logs/avdmanager.log || true
 
       # Owned by the workflow rather than a third-party action so that the
       # emulator's own output is captured and published when boot fails.
       - name: Boot the emulator
         run: |
           set -uo pipefail
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
           nohup "$ANDROID_HOME/emulator/emulator" -avd ci35 \
             -no-window -gpu swiftshader_indirect -no-snapshot -no-audio -no-boot-anim \
             -camera-back none -camera-front none -no-metrics \
