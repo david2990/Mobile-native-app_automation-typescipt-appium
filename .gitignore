@@ -1,0 +1,16 @@
+node_modules/
+reports/
+allure-results/
+logs/
+*.log
+
+# App binaries are never committed - download or drop them locally
+apps/*
+!apps/.gitkeep
+
+# Local configuration / secrets
+.env
+.env.local
+
+.DS_Store
+Thumbs.db
