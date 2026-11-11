@@ -84,8 +84,9 @@ jobs:
             # "EACCES: permission denied, mkdir '/cmdline-tools'".
             export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
             export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-            adb wait-for-device
-            adb shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done'
+            # android-emulator-runner already waits for the device to boot; an
+            # extra adb wait/loop here only adds a way for the step to fail.
+            adb devices || true
             npm run test:regression
 
       - name: Seed Allure history
