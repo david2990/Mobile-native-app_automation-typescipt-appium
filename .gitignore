@@ -16,3 +16,4 @@ apps/*
 
 .DS_Store
 Thumbs.db
+ci-logs/
