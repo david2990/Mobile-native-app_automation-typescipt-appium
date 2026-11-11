@@ -25,6 +25,8 @@ jobs:
     name: Run TC-001 and TC-002
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      PLATFORM_VERSION: '15'
 
     steps:
       - uses: actions/checkout@v4
@@ -42,70 +44,81 @@ jobs:
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm || echo "WARNING: no /dev/kvm - the emulator will be too slow to boot"
 
       - name: Install dependencies
         run: npm ci
 
       # The UiAutomator2 driver ships as the `appium-uiautomator2-driver`
-      # devDependency, so Appium loads it from node_modules. A global
-      # `appium driver install` is unnecessary here and fails on a clean runner,
-      # so this step only reports what is available.
+      # devDependency, so Appium loads it from node_modules and no global driver
+      # install is needed (that command fails on a clean runner).
       - name: Show available Appium drivers
         run: npx appium driver list --installed || true
 
       - name: Download the app under test
         run: npm run fetch:app
 
-      # Allure trends need the previous report, so carry the history folder
-      # across runs. The key changes every run, restore-keys picks the newest.
-      - name: Runner diagnostics
+      # Created before anything can fail, so the diagnostics are always
+      # publishable - a boot failure must not leave us without evidence.
+      - name: Prepare diagnostics directory
         run: |
-          echo "node: $(node -v)"
-          echo "npm: $(npm -v)"
-          echo "java: $(java -version 2>&1 | head -1)"
-          echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset}"
-          adb version || true
-          adb devices -l || true
-          ls -l /dev/kvm || echo "no /dev/kvm - the emulator will be too slow to boot"
+          mkdir -p ci-logs
+          {
+            echo "node: $(node -v)"
+            echo "npm: $(npm -v)"
+            echo "java: $(java -version 2>&1 | head -1)"
+            echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
+            echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset}"
+            echo "cpus: $(nproc)"
+            free -m
+            df -h /
+            ls -l /dev/kvm || echo "no /dev/kvm"
+            adb version || true
+            emulator -version 2>/dev/null | head -1 || true
+          } | tee ci-logs/runner-env.txt
 
-      - name: Restore Allure history
-        uses: actions/cache@v4
-        with:
-          path: allure-history
-          key: allure-history-${{ github.run_id }}
-          restore-keys: |
-            allure-history-
+      - name: Create the AVD
+        run: |
+          set -euo pipefail
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          echo "no" | avdmanager create avd \
+            -n ci35 -k "system-images;android-35;google_apis;x86_64" -d pixel_6 --force
+          emulator -list-avds
 
-      - name: Run tests on the emulator
-        uses: reactivecircus/android-emulator-runner@v2
-        env:
-          PLATFORM_VERSION: '15'
-        with:
-          api-level: 35
-          target: google_apis
-          arch: x86_64
-          profile: pixel_6
-          disable-animations: true
-          # A headless runner can only use software rendering, and a cold boot
-          # of API 35 regularly exceeds the 10 minute default on these hosts.
-          emulator-boot-timeout: 1200
-          emulator-options: >-
-            -no-window -gpu swiftshader_indirect -no-snapshot -no-audio
-            -no-boot-anim -camera-back none -camera-front none -netdelay none -netspeed full
-          script: |
-            # Never let ANDROID_HOME be empty: an empty value makes adb and the
-            # SDK tools resolve paths against the filesystem root and fail with
-            # "EACCES: permission denied, mkdir '/cmdline-tools'".
-            export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-            export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-            # android-emulator-runner already waits for the device to boot; an
-            # extra adb wait/loop here only adds a way for the step to fail.
-            set -o pipefail
-            mkdir -p ci-logs
-            adb devices -l > ci-logs/adb-devices.txt 2>&1 || true
-            adb shell getprop ro.build.version.release > ci-logs/android-version.txt 2>&1 || true
-            npm run test:regression 2>&1 | tee ci-logs/wdio-run.log
+      # Owned by the workflow rather than a third-party action so that the
+      # emulator's own output is captured and published when boot fails.
+      - name: Boot the emulator
+        run: |
+          set -uo pipefail
+          nohup "$ANDROID_HOME/emulator/emulator" -avd ci35 \
+            -no-window -gpu swiftshader_indirect -no-snapshot -no-audio -no-boot-anim \
+            -camera-back none -camera-front none -no-metrics \
+            > ci-logs/emulator.log 2>&1 &
+          adb start-server
+
+          booted=0
+          for i in $(seq 1 120); do
+            state=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            echo "attempt $i: sys.boot_completed='${state}'" | tee -a ci-logs/boot-progress.txt
+            if [ "$state" = "1" ]; then booted=1; break; fi
+            sleep 5
+          done
+
+          adb devices -l | tee ci-logs/adb-devices.txt
+          adb shell getprop ro.build.version.release > ci-logs/android-version.txt 2>&1 || true
+
+          if [ "$booted" != "1" ]; then
+            echo "::error::The emulator did not finish booting within 10 minutes"
+            tail -100 ci-logs/emulator.log || true
+            exit 1
+          fi
+          echo "Emulator booted"
+
+      - name: Run tests
+        run: |
+          set -o pipefail
+          adb devices -l | tee -a ci-logs/adb-devices.txt
+          npm run test:regression 2>&1 | tee ci-logs/wdio-run.log
 
       - name: Seed Allure history
         if: always()
@@ -125,8 +138,17 @@ jobs:
           mkdir -p allure-history
           cp -r allure-report/history/. allure-history/ || true
 
-      # Raw results are the thing to keep: they can be re-rendered into a
-      # report later with a different Allure version.
+      # CI logs are useless if they only exist behind an authenticated artifact
+      # download, so publish them with the report itself.
+      - name: Add CI diagnostics to the report
+        if: always()
+        run: |
+          mkdir -p allure-report/ci-logs
+          cp -r ci-logs/. allure-report/ci-logs/ 2>/dev/null || true
+          cp -r reports/appium allure-report/ci-logs/appium 2>/dev/null || true
+          cp -r reports/artifacts allure-report/ci-logs/artifacts 2>/dev/null || true
+          ls -la allure-report/ci-logs || true
+
       - name: Upload raw Allure results
         if: always()
         uses: actions/upload-artifact@v4
@@ -141,6 +163,14 @@ jobs:
         with:
           name: allure-report
           path: allure-report
+          if-no-files-found: ignore
+
+      - name: Upload CI diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: ci-logs
           if-no-files-found: ignore
 
       - name: Upload failure artifacts (screenshots, hierarchy, logcat)
@@ -168,17 +198,6 @@ jobs:
           name: junit-results
           path: reports/junit
           if-no-files-found: ignore
-
-      # CI logs are useless if they only exist behind an authenticated artifact
-      # download, so publish them with the report itself.
-      - name: Publish CI diagnostics with the report
-        if: always()
-        run: |
-          mkdir -p allure-report/ci-logs
-          cp ci-logs/*.txt ci-logs/*.log allure-report/ci-logs/ 2>/dev/null || true
-          cp -r reports/appium allure-report/ci-logs/appium 2>/dev/null || true
-          cp -r reports/artifacts allure-report/ci-logs/artifacts 2>/dev/null || true
-          ls -la allure-report/ci-logs || true
 
       - name: Configure Pages
         if: always()
