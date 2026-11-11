@@ -98,3 +98,24 @@ Every run writes:
 Android only. iOS (`.ipa`) needs XCUITest on macOS - the capabilities layer is kept
 separate (`src/config/capabilities.android.ts`) so an `ios` counterpart can be added
 without touching tests.
+
+## Continuous integration
+
+`.github/workflows/daily-android-tests.yml` boots a fresh API 35 emulator and
+runs both test cases daily at 03:10 UTC, plus on every push to `main` and on
+demand from the Actions tab.
+
+Results are published with Allure:
+
+- `allure-report/` - rendered report, deployed to GitHub Pages (enable
+  Settings -> Pages -> Source "GitHub Actions" once)
+- `allure-results/` - raw results, re-generatable later
+- `reports/artifacts/` - failure screenshots, view hierarchy and logcat
+
+Local usage:
+
+```bash
+npm run test:regression    # also writes allure-results/
+npm run allure:generate    # -> allure-report/index.html
+npm run allure:open        # serve it
+```

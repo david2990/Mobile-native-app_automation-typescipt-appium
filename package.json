@@ -16,12 +16,15 @@
     "emulator:start": "node scripts/emulator.mjs start",
     "emulator:stop": "node scripts/emulator.mjs stop",
     "fetch:app": "node scripts/fetch-demo-app.mjs",
+    "allure:generate": "allure generate allure-results --clean -o allure-report",
+    "allure:open": "allure open allure-report",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@wdio/allure-reporter": "^10.2.0",
     "@wdio/appium-service": "^10.0.0",
     "@wdio/cli": "^10.0.0",
     "@wdio/globals": "^10.0.0",
@@ -31,6 +34,7 @@
     "@wdio/mocha-framework": "^10.0.0",
     "@wdio/spec-reporter": "^10.0.0",
     "@wdio/types": "^10.0.0",
+    "allure-commandline": "^2.46.1",
     "appium": "^3.0.0",
     "appium-uiautomator2-driver": "^8.7.3",
     "dotenv": "^17.0.0",

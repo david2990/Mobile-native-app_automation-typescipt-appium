@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import * as allure from '@wdio/allure-reporter';
 import { ReportAggregator } from '@wdio/html-reporter';
 import type { Options } from '@wdio/types';
 import { ensureToolchain } from './src/config/toolchain.js';
@@ -13,6 +14,7 @@ ensureToolchain();
 
 const log = createLogger('wdio');
 const REPORTS = path.resolve('reports');
+const ALLURE_RESULTS = path.resolve('allure-results');
 
 type FrameworkConfig = Options.Testrunner & {
   capabilities: WebdriverIO.Capabilities[];
@@ -63,6 +65,16 @@ export const config: FrameworkConfig = {
         outputFileFormat: (options) => `wdio-${options.cid}.xml`,
       },
     ],
+    [
+      'allure',
+      {
+        outputDir: ALLURE_RESULTS,
+        // The UI steps are noise for a mobile flow; the failure screenshots and
+        // the attachment we add below are what matter.
+        disableWebdriverStepsReporting: true,
+        disableWebdriverScreenshotsReporting: false,
+      },
+    ],
   ],
 
   mochaOpts: {
@@ -75,6 +87,8 @@ export const config: FrameworkConfig = {
     for (const dir of ['html', 'junit', 'appium', 'artifacts']) {
       fs.mkdirSync(path.join(REPORTS, dir), { recursive: true });
     }
+    fs.mkdirSync(ALLURE_RESULTS, { recursive: true });
+
     reportAggregator = new ReportAggregator({
       outputDir: path.join(REPORTS, 'html'),
       filename: 'index.html',
@@ -95,7 +109,19 @@ export const config: FrameworkConfig = {
     const title = `${test.parent ?? ''} ${test.title ?? 'unnamed'}`.trim();
     log.warn(`Test failed: ${title}`);
     try {
-      await captureFailureArtifacts(title);
+      const files = await captureFailureArtifacts(title);
+      // Push the same evidence into Allure so a failing CI run explains itself
+      // from the report alone, without downloading artifacts.
+      for (const file of files) {
+        if (!fs.existsSync(file)) continue;
+        const isImage = file.endsWith('.png');
+        const isXml = file.endsWith('.xml');
+        allure.addAttachment(
+          path.basename(file),
+          fs.readFileSync(file),
+          isImage ? 'image/png' : isXml ? 'application/xml' : 'text/plain',
+        );
+      }
     } catch (error) {
       log.error(`Artifact capture failed: ${String(error)}`);
     }

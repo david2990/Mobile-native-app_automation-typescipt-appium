@@ -1,0 +1,160 @@
+name: Daily Android Tests
+
+on:
+  # 03:10 UTC every day. GitHub cron is UTC-only; this is 08:40 IST.
+  schedule:
+    - cron: '10 3 * * *'
+  # Lets you trigger a run by hand from the Actions tab.
+  workflow_dispatch:
+  # Also run on pushes to main so a broken commit is caught immediately.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two emulator runs overlap on the same Pages deployment.
+concurrency:
+  group: daily-android-tests
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Run TC-001 and TC-002
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # The emulator needs hardware acceleration; GitHub's runners expose KVM
+      # only after these udev rules are applied.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTION+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The driver is not a package dependency - Appium installs it on first use.
+      - name: Install Appium UiAutomator2 driver
+        run: npm run appium:driver
+
+      - name: Download the app under test
+        run: npm run fetch:app
+
+      # Allure trends need the previous report, so carry the history folder
+      # across runs. The key changes every run, restore-keys picks the newest.
+      - name: Restore Allure history
+        uses: actions/cache@v4
+        with:
+          path: allure-history
+          key: allure-history-${{ github.run_id }}
+          restore-keys: |
+            allure-history-
+
+      - name: Run tests on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          PLATFORM_VERSION: '15'
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: >-
+            -no-window -gpu swiftshader_indirect -no-snapshot -no-audio -no-boot-anim
+          script: |
+            adb wait-for-device
+            adb shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done'
+            npm run test:regression
+
+      - name: Seed Allure history
+        if: always()
+        run: |
+          if [ -d allure-history ]; then
+            mkdir -p allure-results/history
+            cp -r allure-history/. allure-results/history/ || true
+          fi
+
+      - name: Generate Allure report
+        if: always()
+        run: npm run allure:generate
+
+      - name: Save Allure history for the next run
+        if: always()
+        run: |
+          mkdir -p allure-history
+          cp -r allure-report/history/. allure-history/ || true
+
+      # Raw results are the thing to keep: they can be re-rendered into a
+      # report later with a different Allure version.
+      - name: Upload raw Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results
+          path: allure-results
+          if-no-files-found: ignore
+
+      - name: Upload rendered Allure report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report
+          if-no-files-found: ignore
+
+      - name: Upload failure artifacts (screenshots, hierarchy, logcat)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-artifacts
+          path: reports/artifacts
+          if-no-files-found: ignore
+
+      - name: Upload JUnit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-results
+          path: reports/junit
+          if-no-files-found: ignore
+
+      - name: Configure Pages
+        if: always()
+        uses: actions/configure-pages@v5
+
+      - name: Stage report for Pages
+        if: always()
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: allure-report
+
+  publish:
+    name: Publish Allure report to Pages
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
