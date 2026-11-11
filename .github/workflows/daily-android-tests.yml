@@ -46,9 +46,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The driver is not a package dependency - Appium installs it on first use.
-      - name: Install Appium UiAutomator2 driver
-        run: npm run appium:driver
+      # The UiAutomator2 driver ships as the `appium-uiautomator2-driver`
+      # devDependency, so Appium loads it from node_modules. A global
+      # `appium driver install` is unnecessary here and fails on a clean runner,
+      # so this step only reports what is available.
+      - name: Show available Appium drivers
+        run: npx appium driver list --installed || true
 
       - name: Download the app under test
         run: npm run fetch:app
