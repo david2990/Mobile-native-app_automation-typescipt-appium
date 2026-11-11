@@ -69,8 +69,6 @@ jobs:
       - name: Run tests on the emulator
         uses: reactivecircus/android-emulator-runner@v2
         env:
-          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           PLATFORM_VERSION: '15'
         with:
           api-level: 35
@@ -81,6 +79,11 @@ jobs:
           emulator-options: >-
             -no-window -gpu swiftshader_indirect -no-snapshot -no-audio -no-boot-anim
           script: |
+            # Never let ANDROID_HOME be empty: an empty value makes adb and the
+            # SDK tools resolve paths against the filesystem root and fail with
+            # "EACCES: permission denied, mkdir '/cmdline-tools'".
+            export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+            export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
             adb wait-for-device
             adb shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done'
             npm run test:regression
